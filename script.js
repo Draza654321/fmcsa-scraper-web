@@ -1,6 +1,7 @@
 // Configuration
-const DELAY_BETWEEN_REQUESTS = 500; // ms
-const MAX_CONCURRENT_REQUESTS = 3;
+const DELAY_BETWEEN_REQUESTS = 2000; // 2s delay to avoid rate limiting
+const CORS_PROXY = "https://cors-anywhere.herokuapp.com/"; // Free proxy service
+const FMCSA_URL = "https://safer.fmcsa.dot.gov/CompanySnapshot.aspx";
 
 // DOM Elements
 const startBtn = document.getElementById('start-btn');
@@ -83,13 +84,63 @@ function startScraping() {
     processQueue();
 }
 
-async function processQueue() {
-    const activeWorkers = [];
-    
-    while (queue.length > 0 && !stopRequested) {
-        while (isPaused && !stopRequested) {
-            await sleep(100);
+async function processMcNumber(mc) {
+    try {
+        currentMc.textContent = `Current MC: ${mc}`;
+        currentCompany.textContent = "Loading...";
+
+        // Fetch the page through CORS proxy
+        const response = await fetch(`${CORS_PROXY}${FMCSA_URL}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({
+                '2': 'on',  // MC Number radio button
+                '4': mc,    // MC Number value
+                'search': 'search' // Form submission
+            })
+        });
+
+        const html = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+
+        // Check if record exists
+        const notFound = doc.querySelector("td:contains('Record Not Found')");
+        if (notFound) {
+            updateProgress(++processed, found);
+            currentCompany.textContent = "Company: Not Found";
+            return;
         }
+
+        // Extract company data
+        const companyName = doc.querySelector("tr:contains('Legal Name') td:nth-child(2)")?.textContent.trim() || "N/A";
+        const phone = doc.querySelector("tr:contains('Telephone') td:nth-child(2)")?.textContent.trim() || "N/A";
+        const status = doc.querySelector("tr:contains('Carrier Status') td:nth-child(2)")?.textContent.trim() || "N/A";
+
+        // Only save authorized carriers
+        if (status.includes("AUTHORIZED FOR Property")) {
+            found++;
+            const result = {
+                mcNumber: mc,
+                companyName: companyName,
+                phone: phone,
+                status: status
+            };
+            results.push(result);
+            addResultToTable(result);
+            currentCompany.textContent = `Company: ${companyName.substring(0, 30)}...`;
+        }
+
+        updateProgress(++processed, found);
+        
+    } catch (error) {
+        console.error(`Error processing MC ${mc}:`, error);
+        showError(`Error processing MC ${mc}: ${error.message}`);
+        updateProgress(++processed, found);
+    }
+}
         
         if (activeWorkers.length >= MAX_CONCURRENT_REQUESTS) {
             await sleep(100);
