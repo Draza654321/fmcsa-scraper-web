@@ -7,7 +7,6 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* Basic reset */
         * {
             margin: 0;
             padding: 0;
@@ -397,8 +396,8 @@
 
     <script>
         // Configuration
-        const DELAY_BETWEEN_REQUESTS = 2000; // 2s delay to avoid rate limiting
-        const CORS_PROXY = "https://corsproxy.io/?"; // More reliable proxy
+        const DELAY_BETWEEN_REQUESTS = 2000; // 2s delay between requests
+        const CORS_PROXY = "https://api.allorigins.win/raw?url="; // Reliable CORS proxy
         const FMCSA_URL = "https://safer.fmcsa.dot.gov/CompanySnapshot.aspx";
 
         // DOM Elements
@@ -517,13 +516,23 @@
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 
                 const html = await response.text();
+                
+                // Verify we got the actual FMCSA page
+                if (!html.includes("CompanySnapshot.aspx")) {
+                    throw new Error("Invalid response from server");
+                }
+
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(html, 'text/html');
 
                 // Check if record exists
-                const notFound = Array.from(doc.querySelectorAll('td')).find(td => 
-                    td.textContent.includes('Record Not Found')
-                );
+                const notFound = doc.evaluate(
+                    "//td[contains(., 'Record Not Found')]",
+                    doc,
+                    null,
+                    XPathResult.FIRST_ORDERED_NODE_TYPE,
+                    null
+                ).singleNodeValue;
                 
                 if (notFound) {
                     updateProgress(++processed, found);
@@ -531,23 +540,30 @@
                     return;
                 }
 
-                // Extract company data
-                const rows = Array.from(doc.querySelectorAll('tr'));
-                let companyName = "N/A";
-                let phone = "N/A";
-                let status = "N/A";
-
-                for (const row of rows) {
-                    const cells = row.querySelectorAll('td, th');
-                    if (cells.length >= 2) {
-                        const label = cells[0].textContent.trim();
-                        const value = cells[1].textContent.trim();
-                        
-                        if (label.includes('Legal Name')) companyName = value;
-                        if (label.includes('Telephone')) phone = value;
-                        if (label.includes('Carrier Status')) status = value;
+                // Extract company data using improved method
+                const extractData = (labelText) => {
+                    const elements = doc.evaluate(
+                        `//th[contains(., '${labelText}')]`,
+                        doc,
+                        null,
+                        XPathResult.ANY_TYPE,
+                        null
+                    );
+                    
+                    let element = elements.iterateNext();
+                    while (element) {
+                        const nextCell = element.nextElementSibling;
+                        if (nextCell && nextCell.tagName === 'TD') {
+                            return nextCell.textContent.trim();
+                        }
+                        element = elements.iterateNext();
                     }
-                }
+                    return "N/A";
+                };
+
+                const companyName = extractData("Legal Name") || "N/A";
+                const phone = extractData("Telephone") || "N/A";
+                const status = extractData("Carrier Status") || "N/A";
 
                 // Only save authorized carriers
                 if (status.includes("AUTHORIZED FOR Property")) {
