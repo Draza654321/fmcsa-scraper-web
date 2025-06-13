@@ -39,7 +39,7 @@ pauseBtn.addEventListener('click', togglePause);
 stopBtn.addEventListener('click', stopScraping);
 downloadBtn.addEventListener('click', downloadResults);
 
-// Functions
+// Main Functions
 function startScraping() {
     // Reset state
     isRunning = true;
@@ -84,6 +84,24 @@ function startScraping() {
     processQueue();
 }
 
+async function processQueue() {
+    while (queue.length > 0 && !stopRequested) {
+        while (isPaused && !stopRequested) {
+            await sleep(100);
+        }
+        
+        if (stopRequested) break;
+        
+        const mc = queue.shift();
+        await processMcNumber(mc);
+        await sleep(DELAY_BETWEEN_REQUESTS);
+    }
+    
+    if (!stopRequested) {
+        scrapingComplete();
+    }
+}
+
 async function processMcNumber(mc) {
     try {
         currentMc.textContent = `Current MC: ${mc}`;
@@ -102,35 +120,44 @@ async function processMcNumber(mc) {
             })
         });
 
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        
         const html = await response.text();
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
 
         // Check if record exists
-        const notFound = doc.querySelector("td:contains('Record Not Found')");
+        const notFound = doc.evaluate(
+            "//td[contains(text(), 'Record Not Found')]",
+            doc,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+        ).singleNodeValue;
+        
         if (notFound) {
             updateProgress(++processed, found);
             currentCompany.textContent = "Company: Not Found";
             return;
         }
 
-        // Extract company data
-        const companyName = doc.querySelector("tr:contains('Legal Name') td:nth-child(2)")?.textContent.trim() || "N/A";
-        const phone = doc.querySelector("tr:contains('Telephone') td:nth-child(2)")?.textContent.trim() || "N/A";
-        const status = doc.querySelector("tr:contains('Carrier Status') td:nth-child(2)")?.textContent.trim() || "N/A";
+        // Extract company data using XPath (more reliable than CSS selectors)
+        const companyName = getXPathResult(doc, "//tr[contains(th/text(), 'Legal Name')]/td[2]");
+        const phone = getXPathResult(doc, "//tr[contains(th/text(), 'Telephone')]/td[2]");
+        const status = getXPathResult(doc, "//tr[contains(th/text(), 'Carrier Status')]/td[2]");
 
         // Only save authorized carriers
-        if (status.includes("AUTHORIZED FOR Property")) {
+        if (status && status.includes("AUTHORIZED FOR Property")) {
             found++;
             const result = {
                 mcNumber: mc,
-                companyName: companyName,
-                phone: phone,
-                status: status
+                companyName: companyName || "N/A",
+                phone: phone || "N/A",
+                status: status || "N/A"
             };
             results.push(result);
             addResultToTable(result);
-            currentCompany.textContent = `Company: ${companyName.substring(0, 30)}...`;
+            currentCompany.textContent = `Company: ${(companyName || '').substring(0, 30)}...`;
         }
 
         updateProgress(++processed, found);
@@ -141,75 +168,20 @@ async function processMcNumber(mc) {
         updateProgress(++processed, found);
     }
 }
-        
-        if (activeWorkers.length >= MAX_CONCURRENT_REQUESTS) {
-            await sleep(100);
-            continue;
-        }
-        
-        const mc = queue.shift();
-        currentMc.textContent = `Current MC: ${mc}`;
-        currentCompany.textContent = 'Company: -';
-        
-        const worker = processMcNumber(mc)
-            .finally(() => {
-                const index = activeWorkers.indexOf(worker);
-                if (index !== -1) {
-                    activeWorkers.splice(index, 1);
-                }
-            });
-        
-        activeWorkers.push(worker);
-        
-        await sleep(DELAY_BETWEEN_REQUESTS);
-    }
-    
-    // Wait for all active workers to finish
-    await Promise.all(activeWorkers);
-    
-    // Scraping complete
-    if (!stopRequested) {
-        scrapingComplete();
-    }
-}
 
-async function processMcNumber(mc) {
+// Helper Functions
+function getXPathResult(doc, xpath) {
     try {
-        // In a real implementation, this would make an actual request to FMCSA
-        // For this demo, we'll simulate the request with random results
-        
-        // Simulate network delay
-        await sleep(Math.random() * 1000 + 500);
-        
-        // Randomly determine if found
-        const isFound = Math.random() > 0.7;
-        
-        processed++;
-        
-        if (isFound) {
-            found++;
-            
-            // Simulate result data
-            const result = {
-                mcNumber: mc,
-                companyName: `Demo Company ${Math.floor(Math.random() * 1000)}`,
-                phone: `(${Math.floor(Math.random() * 900) + 100}) ${Math.floor(Math.random() * 900) + 100}-${Math.floor(Math.random() * 9000) + 1000}`,
-                status: 'AUTHORIZED FOR Property'
-            };
-            
-            results.push(result);
-            
-            // Update UI
-            currentCompany.textContent = `Company: ${result.companyName}`;
-            addResultToTable(result);
-        }
-        
-        updateProgress(processed, found);
-    } catch (error) {
-        console.error(`Error processing MC ${mc}:`, error);
-        showError(`Error processing MC ${mc}: ${error.message}`);
-        processed++;
-        updateProgress(processed, found);
+        const result = doc.evaluate(
+            xpath,
+            doc,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+        ).singleNodeValue;
+        return result ? result.textContent.trim() : null;
+    } catch {
+        return null;
     }
 }
 
@@ -223,44 +195,34 @@ function updateProgress(current, foundCountValue) {
 
 function addResultToTable(result) {
     const row = document.createElement('tr');
-    
     row.innerHTML = `
         <td>${result.mcNumber}</td>
         <td>${result.companyName}</td>
         <td>${result.phone}</td>
         <td>${result.status}</td>
     `;
-    
     resultsTable.appendChild(row);
 }
 
 function scrapingComplete() {
     isRunning = false;
     stopTimer();
-    
     startBtn.disabled = false;
     pauseBtn.disabled = true;
     stopBtn.disabled = true;
     downloadBtn.disabled = false;
-    
     currentMc.textContent = 'Current MC: -';
     currentCompany.textContent = 'Company: -';
     
     if (results.length > 0) {
         resultsContainer.style.display = 'block';
     }
-    
-    // Show completion message
     showError('Scraping completed successfully!', 'success');
 }
 
 function togglePause() {
     isPaused = !isPaused;
     pauseBtn.innerHTML = isPaused ? '<i class="fas fa-play"></i> Resume' : '<i class="fas fa-pause"></i> Pause';
-    
-    if (!isPaused) {
-        processQueue();
-    }
 }
 
 function stopScraping() {
@@ -268,14 +230,11 @@ function stopScraping() {
     isRunning = false;
     isPaused = false;
     stopTimer();
-    
     startBtn.disabled = false;
     pauseBtn.disabled = true;
     stopBtn.disabled = true;
-    
     currentMc.textContent = 'Current MC: -';
     currentCompany.textContent = 'Company: -';
-    
     showError('Scraping stopped by user');
 }
 
@@ -288,11 +247,9 @@ function startTimer() {
 function updateTimer() {
     const now = new Date();
     const diff = Math.floor((now - startTime) / 1000);
-    
     const hours = Math.floor(diff / 3600);
     const minutes = Math.floor((diff % 3600) / 60);
     const seconds = diff % 60;
-    
     elapsedTime.textContent = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
 }
 
@@ -323,11 +280,9 @@ function downloadResults() {
         // Convert to CSV
         const headers = ['MC Number', 'Company Name', 'Phone', 'Status'];
         const rows = results.map(r => [r.mcNumber, r.companyName, r.phone, r.status]);
-        
         content = [headers, ...rows]
             .map(row => row.map(field => `"${field.replace(/"/g, '""')}"`).join(','))
             .join('\n');
-        
         mimeType = 'text/csv';
         extension = 'csv';
     } else {
